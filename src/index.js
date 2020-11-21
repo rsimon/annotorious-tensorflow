@@ -1,12 +1,15 @@
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
-import * as deeplab from '@tensorflow-models/deeplab';
+import * as MagicWand from 'magic-wand-tool';
 import { v4 as uuid } from 'uuid';
 import { Annotorious } from '@recogito/annotorious';
 
 import '@recogito/annotorious/dist/annotorious.min.css';
 
-const toAnnotation = prediction => {
-  const { bbox } = prediction;
+const THRESHOLD = 70;
+
+const toAnnotation = contours => {
+  const points = contours.find(c => !c.inner)
+    .points
+    .map(p => `${p.x},${p.y}`)
 
   return {
     "@context": "http://www.w3.org/ns/anno.jsonld",
@@ -15,53 +18,55 @@ const toAnnotation = prediction => {
     "body": [{
       "type": "TextualBody",
       "purpose": "tagging",
-      "value": prediction['class']
+      "value": "tag"
     }],
     "target": {
       "selector": [{
-        "type": "FragmentSelector",
-        "conformsTo": "http://www.w3.org/TR/media-frags/",
-        "value": `xywh=pixel:${bbox[0]},${bbox[1]},${bbox[2]},${bbox[3]}`
+        "type": "SvgSelector",
+        "value": `<svg><polygon points="${points.join(' ')}" /></svg>`
       }]
     }
   };
 }
 
-const segment = async () => {
-  const img = document.getElementById("image");
-
-  // Set to your preferred model: 'pascal', 'cityscapes' or 'ade20k'
-  console.time("loading segmentation model");
-  const model = await deeplab.load({ base: "ade20k", quantizationBytes: 2 });
-  console.timeEnd("loading segmentation model");
-
-  console.time("segmenting");
-  const segments = await model.segment(img);
-  console.timeEnd("segmenting");
-
-  const mask = new ImageData(segments.segmentationMap, segments.width, segments.height);
-
-  const ctx = document.getElementById("canvas").getContext("2d");
-  ctx.putImageData(mask, 0, 0);
-}
-
-const detectObjects = async () => {
-  const img = document.getElementById("image");
-
-  console.time("loading object detection model");
-  const model = await cocoSsd.load();
-  console.time("loading object detection model");
-
-  console.time("predicting objects")
-  const predictions = await model.detect(img);
-  console.time("predicting objects")
+const onClick = img => evt => {
+  // Read image data
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.canvas.width = img.width;
+  ctx.canvas.height = img.height;
+  ctx.drawImage(img, 0, 0);
   
-  const anno = new Annotorious({ image });
-  anno.setAnnotations(predictions.map(p => toAnnotation(p)));
+  const image = {
+    data: ctx.getImageData(0, 0, img.width, img.height).data,
+    width: img.width,
+    height: img.height,
+    bytes: 4
+  };
+
+  let mask = MagicWand.floodFill(image, evt.x, evt.y, THRESHOLD, null);
+  if (mask) 
+    mask = MagicWand.gaussBlurOnlyBorder(mask, 5);
+  
+  const contours = MagicWand.traceContours(mask);
+  const simple = toAnnotation(MagicWand.simplifyContours(contours, 2, 12));
+
+  const anno = new Annotorious({ 
+    image: document.getElementById('image'),
+    widgets: ['TAG']
+  });
+  anno.setAnnotations([ simple ]);
+  anno.selectAnnotation(simple);
 }
 
-// Run
-(async () => {
-  detectObjects();
-  segment();
+const renderMask = mask=> {
+  const ctx = document.getElementById("canvas").getContext("2d");
+  ctx.putImageData(new ImageData(mask.data, mask.width, mask.height), 0, 0);
+}
+
+(function() {
+  const img = document.getElementById("image");
+
+
+  img.addEventListener('click', onClick(img));
+
 })();
