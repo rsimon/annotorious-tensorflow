@@ -1,72 +1,55 @@
-import * as MagicWand from 'magic-wand-tool';
-import { v4 as uuid } from 'uuid';
 import { Annotorious } from '@recogito/annotorious';
+import * as deeplab from '@tensorflow-models/deeplab';
 
 import '@recogito/annotorious/dist/annotorious.min.css';
 
-const THRESHOLD = 70;
+const segment = async (canvas, model) => {
+  console.time("segmenting");
+  const segments = await model.segment(canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height));
+  console.timeEnd("segmenting");
 
-const toAnnotation = contours => {
-  const points = contours.find(c => !c.inner)
-    .points
-    .map(p => `${p.x},${p.y}`)
+  const mask = new ImageData(segments.segmentationMap, segments.width, segments.height);
+  console.log(segments);
 
-  return {
-    "@context": "http://www.w3.org/ns/anno.jsonld",
-    "id": `#${uuid()}`,
-    "type": "Annotation",
-    "body": [{
-      "type": "TextualBody",
-      "purpose": "tagging",
-      "value": "tag"
-    }],
-    "target": {
-      "selector": [{
-        "type": "SvgSelector",
-        "value": `<svg><polygon points="${points.join(' ')}" /></svg>`
-      }]
-    }
-  };
-}
+  const canvas2 = document.createElement('canvas');
+  canvas2.width = segments.width;
+  canvas2.height = segments.height
+  const ctx = canvas2.getContext("2d");
+  ctx.putImageData(mask, 0, 0);
 
-const onClick = img => evt => {
-  // Read image data
-  const ctx = document.createElement('canvas').getContext('2d');
-  ctx.canvas.width = img.width;
-  ctx.canvas.height = img.height;
-  ctx.drawImage(img, 0, 0);
-  
-  const image = {
-    data: ctx.getImageData(0, 0, img.width, img.height).data,
-    width: img.width,
-    height: img.height,
-    bytes: 4
-  };
-
-  let mask = MagicWand.floodFill(image, evt.x, evt.y, THRESHOLD, null);
-  if (mask) 
-    mask = MagicWand.gaussBlurOnlyBorder(mask, 5);
-  
-  const contours = MagicWand.traceContours(mask);
-  const simple = toAnnotation(MagicWand.simplifyContours(contours, 2, 12));
-
-  const anno = new Annotorious({ 
-    image: document.getElementById('image'),
-    widgets: ['TAG']
-  });
-  anno.setAnnotations([ simple ]);
-  anno.selectAnnotation(simple);
-}
-
-const renderMask = mask=> {
-  const ctx = document.getElementById("canvas").getContext("2d");
-  ctx.putImageData(new ImageData(mask.data, mask.width, mask.height), 0, 0);
+  document.getElementById('app').appendChild(canvas2);
 }
 
 (function() {
-  const img = document.getElementById("image");
+  // Set to your preferred model: 'pascal', 'cityscapes' or 'ade20k'
+  console.time("loading segmentation model");
+  deeplab.load({ base: "pascal", quantizationBytes: 4 }).then(model => {
+    console.timeEnd("loading segmentation model");
+    
+    const image = document.getElementById('image');
+    const anno =  new Annotorious({ image });
 
+    let canvas;
 
-  img.addEventListener('click', onClick(img));
+    anno.on('createSelection', selection => {
+      // Parse fragment selector
+      const [ x, y, w, h ] = selection.target.selector.value
+        .split(':')[1]
+        .split(',')
+        .map(str => parseFloat(str));
 
+      // Read selected image data
+      requestAnimationFrame(() => {
+        canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.canvas.width = w;
+        ctx.canvas.height = h;
+        ctx.drawImage(image, x, y, w, h, 0, 0, w, h);
+
+        document.getElementById('app').appendChild(canvas);
+      });
+
+      requestAnimationFrame(() => segment(canvas, model));
+    });
+  });
 })();
